@@ -1,7 +1,7 @@
 # .github/workflows/convert-mod-to-flac.yml
 name: Convert MOD to FLAC and Commit
 
-# main ブランチへの push、または手動 dispatch に対応
+# push と手動 dispatch の両方に対応
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ on:
         description: '変換対象のアーカイブファイルのダウンロード URL'
         required: true
 
-# コミット／プッシュ権限を明示
+# リポジトリへの書き込み権限を許可
 permissions:
   contents: write
 
@@ -24,8 +24,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0          # フルヒストリー取得
-          persist-credentials: true  # GITHUB_TOKEN を checkout 後も有効に
+          fetch-depth: 0             # フル履歴取得
+          persist-credentials: true  # checkout 後も GITHUB_TOKEN を利用可能に
 
       - name: Install dependencies
         run: |
@@ -33,15 +33,15 @@ jobs:
           sudo apt-get install -y p7zip-full unzip unar ffmpeg
 
       - name: Prepare variables
+        id: prep
         run: |
           echo "Download URL: ${{ github.event.inputs.download_url }}"
-          # 拡張子だけ抽出（クエリパラメータを切り落とす）
           url="${{ github.event.inputs.download_url }}"
-          fname="${url##*/}"
+          # 最後の / 以降を取得し、クエリパラメータを削除
+          fname="$(basename "${url}" | cut -d'?' -f1)"
           ext="${fname##*.}"
-          echo "Detected extension: $ext"
-          echo "##[set-output name=ext;]$ext"
-        id: prep
+          echo "Detected extension: ${ext}"
+          echo "##[set-output name=ext;]${ext}"
 
       - name: Download archive
         run: |
@@ -53,19 +53,18 @@ jobs:
         run: |
           mkdir extracted
           case "${{ steps.prep.outputs.ext }}" in
-            7z) 7z x -oextracted archive ;;
-            zip) unzip archive -d extracted ;;
-            lzh) unar -o extracted archive ;;
             raw)
-              # raw はそのままコピー
+              echo "Raw file → コピーのみ"
               cp archive extracted/ ;;
             *)
-              echo "Error: Unsupported extension '${{ steps.prep.outputs.ext }}'"
-              exit 1
+              echo "Extracting with 7z (errors ignored)..."
+              # 7z で展開しつつ、エラーを無視
+              7z x archive -oextracted -y || true
               ;;
           esac
-          echo "Extraction complete."
-      
+          echo "── 展開後ファイル一覧 ──"
+          ls -R extracted
+
       - name: Find & convert MOD→FLAC
         run: |
           mkdir -p flac_output
