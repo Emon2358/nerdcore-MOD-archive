@@ -1,87 +1,96 @@
 # .github/workflows/convert-mod-to-flac.yml
 name: Convert MOD to FLAC and Commit
 
+# main ブランチへの push、または手動 dispatch に対応
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       download_url:
         description: '変換対象のアーカイブファイルのダウンロード URL'
         required: true
 
+# コミット／プッシュ権限を明示
+permissions:
+  contents: write
+
 jobs:
-  build:
+  convert:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
-          fetch-depth: 0   # full history を取得してコミットが可能に
+          fetch-depth: 0          # フルヒストリー取得
+          persist-credentials: true  # GITHUB_TOKEN を checkout 後も有効に
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            p7zip-full \
-            unzip \
-            unar \
-            ffmpeg
+          sudo apt-get install -y p7zip-full unzip unar ffmpeg
+
+      - name: Prepare variables
+        run: |
+          echo "Download URL: ${{ github.event.inputs.download_url }}"
+          # 拡張子だけ抽出（クエリパラメータを切り落とす）
+          url="${{ github.event.inputs.download_url }}"
+          fname="${url##*/}"
+          ext="${fname##*.}"
+          echo "Detected extension: $ext"
+          echo "##[set-output name=ext;]$ext"
+        id: prep
 
       - name: Download archive
         run: |
-          echo "Downloading ${{ github.event.inputs.download_url }}..."
-          curl -L --output archive "${{ github.event.inputs.download_url }}"
+          echo "Downloading..."
+          curl -L --retry 3 --retry-delay 5 \
+            --output archive "${{ github.event.inputs.download_url }}"
 
       - name: Extract archive
         run: |
           mkdir extracted
-          case "${{ github.event.inputs.download_url##*. }}" in
+          case "${{ steps.prep.outputs.ext }}" in
             7z) 7z x -oextracted archive ;;
             zip) unzip archive -d extracted ;;
             lzh) unar -o extracted archive ;;
             raw)
+              # raw はそのままコピー
               cp archive extracted/ ;;
             *)
-              echo "Unsupported extension: ${${{ github.event.inputs.download_url##*. }}}"
+              echo "Error: Unsupported extension '${{ steps.prep.outputs.ext }}'"
               exit 1
               ;;
           esac
-
-      - name: Find and convert MOD files to FLAC
+          echo "Extraction complete."
+      
+      - name: Find & convert MOD→FLAC
         run: |
           mkdir -p flac_output
           find extracted -type f \( \
-            -iname '*.mod' \
-            -o -iname '*.s3m' \
-            -o -iname '*.xm' \
-            -o -iname '*.it' \
-          \) | while read -r filepath; do
-            filename=$(basename "$filepath")
-            base="${filename%.*}"
-            echo "Converting $filename → ${base}.flac"
-            ffmpeg -y -i "$filepath" "flac_output/${base}.flac"
+            -iname '*.mod' -o -iname '*.s3m' \
+            -o -iname '*.xm'  -o -iname '*.it' \
+          \) | while read -r file; do
+            base=$(basename "$file" | sed 's/\.[^.]*$//')
+            echo "Converting $file → flac_output/${base}.flac"
+            ffmpeg -y -i "$file" "flac_output/${base}.flac"
           done
 
       - name: Copy FLACs into repo
         run: |
-          # 例えば output/flac 内に集約
           mkdir -p mods/flac
-          cp flac_output/*.flac mods/flac/ || true
+          cp flac_output/*.flac mods/flac/ || echo "No FLAC files to copy"
 
-      - name: Configure Git for commit
+      - name: Commit & Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Commit and push FLAC files
-        run: |
           git add mods/flac
-          # 変更があればコミット
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Add converted FLAC files from ${{ github.event.inputs.download_url }}"
-            git push origin HEAD:${{ github.ref_name }}
+            git commit -m "Add converted FLAC from ${{ github.event.inputs.download_url }}"
+            git push origin HEAD:${{ github.ref_name || 'main' }}
           fi
-        env:
-          # GITHUB_TOKEN は自動で設定されるので特別な設定不要
-          PINOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
